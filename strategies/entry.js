@@ -12,8 +12,8 @@ class EntryLogic {
   checkEntry(candles) {
     //if (candles.length < 200) {
     // Need at least 200 candles for EMA200 calculation
-    if (candles.length < 50) {
-      // Need at least 50 candles for EMA50 calculation (faster startup)
+    if (candles.length < 20) {
+      // Need at least 20 candles for faster startup (still reasonable for EMA20/50)
       return { signal: "none" };
     }
 

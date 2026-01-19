@@ -1,6 +1,7 @@
 require("dotenv/config");
 const DeltaWs = require("./exchange/deltaWs.js");
 const CandleBuilder = require("./market-data/candleBuilder.js");
+const HistoricalCandles = require("./services/historicalCandles.js");
 const EntryLogic = require("./strategies/entry.js");
 const PositionSizer = require("./risk/positionSize.js");
 const StopLossEngine = require("./risk/stopLoss.js");
@@ -14,7 +15,8 @@ const { DataTypes } = require("sequelize");
 const TradeModel = require("./models/Trade.js");
 
 const Trade = TradeModel(sequelize, DataTypes);
-
+const SignalModel = require("./models/Signal.js");
+const Signal = SignalModel(sequelize, DataTypes);
 (async () => {
   await sequelize.sync();
   console.log("✅ Database Ready");
@@ -37,6 +39,79 @@ const Trade = TradeModel(sequelize, DataTypes);
     console.log("🧪 Starting in PAPER trading mode");
   }
 
+  // Load historical candles for faster startup (default: last 1 day)
+  console.log("🚀 Loading historical candles from Delta Exchange...");
+  const coins = require("./config/coins.js");
+  const symbols = coins.map((c) => c.symbol);
+
+  // Number of days to fetch (use HISTORICAL_DAYS env var), default 1 day
+  const historicalDays = parseInt(process.env.HISTORICAL_DAYS || "1", 10);
+  const resolution = "1m";
+  const limitPerDay = { "1m": 60 * 24, "5m": 12 * 24, "15m": 4 * 24, "1h": 24 }[resolution] || 1440;
+  const limit = historicalDays * limitPerDay;
+  const useCache = process.env.HISTORICAL_REFRESH === "YES" ? false : true;
+
+  try {
+    const historicalData = await HistoricalCandles.fetchAllHistoricalCandles(symbols, resolution, limit, useCache);
+
+    // Load candles into CandleBuilder
+    for (const [symbol, candles] of Object.entries(historicalData)) {
+      if (symbol && candles.length > 0) {
+        CandleBuilder.loadHistoricalCandles(symbol, candles);
+      }
+    }
+
+    // Log per-symbol summary
+    for (const s of symbols) {
+      const all = CandleBuilder.candles[s] ? Object.values(CandleBuilder.candles[s]).length : 0;
+      const nonEmpty = (CandleBuilder.candles[s] ? Object.values(CandleBuilder.candles[s]) : []).filter(
+        (c) => c.volume > 0,
+      ).length;
+      console.log(`ℹ️ ${s}: loaded ${all} candles (${nonEmpty} non-empty)`);
+    }
+
+    console.log("✅ Historical candles loaded successfully!");
+
+    // Run initial strategy checks using loaded historical candles
+    console.log("🔎 Running initial strategy checks on historical data...");
+    for (const symbol of symbols) {
+      const candles = CandleBuilder.getCandles(symbol, 60000); // 1m candles
+      if (!candles || candles.length === 0) continue;
+
+      const openPosition = PositionManager.getPosition(symbol);
+      if (openPosition) continue;
+      if (!SafetyLimits.canTrade()) continue;
+
+      const entry = EntryLogic.checkEntry(candles);
+      if (entry.signal !== "none") {
+        try {
+          const accountBalance = await tradeExecutor.fetchAccountBalance();
+          const stopLoss = StopLossEngine.getStopLoss(candles, entry.price, entry.signal);
+          const quantity = PositionSizer.calculateQty(
+            accountBalance.result.wallets[0].balance,
+            riskPercent,
+            entry.price,
+            stopLoss,
+          );
+
+          const takeProfits = TakeProfitEngine.calculateTakeProfits(entry.price, stopLoss, entry.signal);
+
+          console.log(`🚀 [INIT] NEW TRADE SIGNAL: ${entry.signal.toUpperCase()} ${symbol} @ ${entry.price}`);
+          console.log(`   - Stop Loss: ${stopLoss}`);
+          console.log(`   - Take Profit 1: ${takeProfits.tp1}`);
+          console.log(`   - Take Profit 2: ${takeProfits.tp2}`);
+          console.log(`   - Quantity: ${quantity}`);
+
+          await PositionManager.openPosition(Trade, symbol, entry.signal, quantity, entry.price, stopLoss, takeProfits);
+        } catch (err) {
+          console.error(`❌ Failed to open initial position for ${symbol}:`, err.message || err);
+        }
+      }
+    }
+  } catch (error) {
+    console.warn("⚠️ Could not load historical candles, will build from ticks:", error.message);
+  }
+
   const onTick = async (symbol, price, volume) => {
     CandleBuilder.addTick(symbol, price, volume);
     const candles = CandleBuilder.getCandles(symbol, 5000); // 5-second candles for faster signals
@@ -51,6 +126,45 @@ const Trade = TradeModel(sequelize, DataTypes);
       const entry = EntryLogic.checkEntry(candles);
 
       if (entry.signal !== "none") {
+        // Record signal in DB
+        try {
+          const original = entry.signal;
+          let applied = original;
+          let note = null;
+
+          // For testing: invert bearish/short to long when INVERT_BEARISH_TO_LONG=YES
+          if (process.env.INVERT_BEARISH_TO_LONG === "YES" && original === "short") {
+            applied = "long";
+            note = "inverted from short to long for testing";
+            console.log("⚠️ INVERT_BEARISH_TO_LONG active: treating short as long");
+          }
+
+          // compute indicators
+          const emas = require("./indicators/ema").getEmas(candles);
+          const rsiInfo = require("./indicators/rsi").getRsi(candles);
+          const volumeInfo = require("./indicators/volume").getVolumeInfo(candles);
+
+          await Signal.create({
+            symbol,
+            original_signal: original,
+            applied_signal: applied,
+            price: entry.price,
+            candles_count: candles.length,
+            note,
+            ema20: emas.ema20,
+            ema50: emas.ema50,
+            ema200: emas.ema200,
+            rsi: rsiInfo.rsi,
+            volume_spike: volumeInfo.volumeSpike,
+          });
+          console.log(`💾 Signal recorded: ${symbol} ${original} -> ${applied}`);
+
+          // Use the applied signal for execution
+          entry.signal = applied;
+        } catch (err) {
+          console.error("❌ Failed to record signal:", err.message || err);
+        }
+
         const accountBalance = await tradeExecutor.fetchAccountBalance();
         const stopLoss = StopLossEngine.getStopLoss(candles, entry.price, entry.signal);
         const quantity = PositionSizer.calculateQty(

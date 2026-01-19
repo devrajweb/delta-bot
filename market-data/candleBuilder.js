@@ -5,6 +5,38 @@ class CandleBuilder {
   constructor() {
     this.candles = {};
     this.lastPrice = {};
+    this.candleHistory = {}; // Store historical candles by symbol
+  }
+
+  // Load historical candles from API (faster initialization)
+  loadHistoricalCandles(symbol, historicalCandles) {
+    if (!historicalCandles || historicalCandles.length === 0) {
+      console.log(`⚠️ No historical candles provided for ${symbol}`);
+      return;
+    }
+
+    // Store historical candles
+    this.candleHistory[symbol] = historicalCandles;
+
+    // Convert to internal format and populate candles storage
+    const oneMinuteCandles = {};
+    for (const candle of historicalCandles) {
+      oneMinuteCandles[candle.timestamp] = {
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+        timestamp: candle.timestamp,
+      };
+    }
+
+    this.candles[symbol] = oneMinuteCandles;
+    if (historicalCandles.length > 0) {
+      this.lastPrice[symbol] = historicalCandles[historicalCandles.length - 1].close;
+    }
+
+    console.log(`✅ Loaded ${historicalCandles.length} historical candles for ${symbol}`);
   }
 
   // Convert ticks to 1m candles
@@ -35,6 +67,24 @@ class CandleBuilder {
     candle.close = price;
     candle.volume += volume;
     this.lastPrice[symbol] = price;
+  }
+
+  // Insert or update a single completed 1m candle (from WS or API)
+  addCandle(symbol, candle) {
+    if (!this.candles[symbol]) this.candles[symbol] = {};
+
+    const ts = candle.timestamp; // expect ms
+    this.candles[symbol][ts] = {
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: Math.max(1, candle.volume || 0), // ensure non-zero
+      timestamp: ts,
+    };
+
+    // Update last price
+    this.lastPrice[symbol] = candle.close;
   }
 
   // Aggregate 1m → 5m / 15m / 1h

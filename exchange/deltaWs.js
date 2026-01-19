@@ -29,6 +29,35 @@ class DeltaWs {
           console.log(`📊 Ticker received - ${message.symbol}: ${message.close}`);
           this.livePriceCache[message.symbol] = message.close;
           this.onTick(message.symbol, parseFloat(message.close), parseFloat(message.volume));
+        } else if (message.type && message.type.startsWith("candlestick_")) {
+          // Handle candlestick messages (1m/5m/15m)
+          console.log(`🕯️ Candle received - ${message.symbol} ${message.type}:`, {
+            open: message.open,
+            high: message.high,
+            low: message.low,
+            close: message.close,
+            volume: message.volume,
+          });
+
+          // Lazy require to avoid circular deps at module load
+          const CandleBuilder = require("../market-data/candleBuilder.js");
+          const tsMs = (parseInt(message.timestamp, 10) || Math.floor(Date.now() / 1000)) * 1000;
+          CandleBuilder.addCandle(message.symbol, {
+            open: parseFloat(message.open),
+            high: parseFloat(message.high),
+            low: parseFloat(message.low),
+            close: parseFloat(message.close),
+            volume: Math.max(1, parseFloat(message.volume) || 0),
+            timestamp: tsMs,
+          });
+
+          // Trigger signal processing for this completed 1m candle
+          const SignalProcessor = require("../services/signalProcessor");
+          SignalProcessor.processCandle(message.symbol).then((s) => {
+            if (s) {
+              console.log(`✅ Signal processed and stored for ${message.symbol} id=${s.id}`);
+            }
+          });
         } else if (message.type === "subscriptions") {
           console.log("✅ Subscription confirmed for channels:", message.channels);
         } else if (message.type === "ping") {
@@ -69,6 +98,10 @@ class DeltaWs {
         channels: [
           {
             name: "v2/ticker",
+            symbols: symbols,
+          },
+          {
+            name: "candlestick_1m",
             symbols: symbols,
           },
         ],
