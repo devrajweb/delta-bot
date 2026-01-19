@@ -1,0 +1,8 @@
+// Entry point for models
+const DailyPnl = require("./DailyPnl");
+const Trade = require("./Trade");
+
+module.exports = {
+  DailyPnl,
+  Trade,
+};
