@@ -3,7 +3,7 @@
 
 module.exports = [
   { symbol: "BTCUSD", qty: 1, leverage: 10 },
-  // { symbol: "ETHUSD", qty: 1, leverage: 10 },
-  // { symbol: "SOLUSD", qty: 1, leverage: 10 },
-  // { symbol: "DOGEUSD", qty: 1, leverage: 10 },
+  { symbol: "ETHUSD", qty: 1, leverage: 10 },
+  { symbol: "SOLUSD", qty: 1, leverage: 10 },
+  { symbol: "DOGEUSD", qty: 1, leverage: 10 },
 ];
